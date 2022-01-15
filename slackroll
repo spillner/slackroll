@@ -2382,7 +2382,7 @@ try:
         newer_available_pkgs = [x for x in local_pkgs if superseded_in(x, repo_pkgs)]
 
         interceptor = SlackrollOutputInterceptor()
-        print_list_or([x.name for x in newer_available_pkgs], header, empty_message)
+        print_pairs_or([(x.name, x.version + ' installed, ' + ', '.join([y.version for y in repo_pkgs if y.name == x.name]) + ' available') for x in newer_available_pkgs], header, empty_message)
         interceptor.stop()
         sys.exit()
 
@@ -2619,12 +2619,14 @@ try:
         current_list = [(x.name, x.version) for x in auto_kernel_pkgs if not superseded_in(x, latest_kernel_pkgs)]
         superseded_list = [(x.name, x.version) for x in auto_kernel_pkgs if superseded_in(x, auto_kernel_pkgs)]
         upgradable_list = [(x.name, x.version) for x in latest_kernel_pkgs if x.name in auto_kernel_pkg_names and x not in auto_kernel_pkgs]
+        keeper_list = [(x.name, x.version) for x in auto_kernel_pkgs if not superseded_in(x, auto_kernel_pkgs) and (x.name, x.version) not in current_list]
         manual_list = [(x.name, x.version) for x in manual_kernel_pkgs]
         available_list = [(x.name, x.version) for x in new_kernel_pkgs]
 
         print_pairs_or(current_list, 'Up-to-date kernel packages:', 'No up-to-date kernel packages')
-        print_pairs_or(upgradable_list, 'Upgradable kernel packages (would be installed by kernel-upgrade):', 'No upgradable kernel packages')
+        print_pairs_or(upgradable_list, 'Newly available versions of kernel packages (would be installed by kernel-upgrade):', 'No upgradable kernel packages')
         print_pairs_or(superseded_list, 'Superseded kernel packages (would be removed by kernel-clean):', 'No superseded kernel packages')
+        print_pairs_or(keeper_list, 'Near-current kernel packages (superseded in repo, but would not be removed by kernel-clean):', 'No superseded kernel packages that would not be removed by kernel-clean')
         print_pairs_or(manual_list, 'Manually managed kernel packages (frozen or foreign):', 'No manually managed kernel packages')
         print_pairs_or(available_list, 'Other available kernel packages:', 'No other kernel packages available for installation or upgrade')
         sys.exit()
