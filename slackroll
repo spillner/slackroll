@@ -1137,7 +1137,7 @@ def print_pairs_or(the_list, header, message_on_empty):
 def superseded_in(pkg, the_list):
     name = pkg.name
     old_version = version.parse(pkg.version)
-    newer_pkgs = [x for x in the_list if x.name == name and version.parse(x.version) > old_version]
+    newer_pkgs = [x for x in the_list if x.name == name and (version.parse(x.version) > old_version or version.parse(x.version) == old_version and x.build > pkg.build)]
     return len(newer_pkgs) > 0
 
 def tr_pkg_detail(local_list, remote_list, persistent_list, pkg_name): # Returns a string with package details for a transient package
@@ -2616,12 +2616,12 @@ try:
         new_kernel_pkgs = concat([remote_list[x] for x in remote_list if x.startswith(slackroll_kernel_pkg_indicator) and persistent_list[x] == slackroll_state_new])
 
         auto_kernel_pkg_names = [x.name for x in auto_kernel_pkgs]
-        current_list = [(x.name, x.version) for x in auto_kernel_pkgs if not superseded_in(x, latest_kernel_pkgs)]
-        superseded_list = [(x.name, x.version) for x in auto_kernel_pkgs if superseded_in(x, auto_kernel_pkgs)]
-        upgradable_list = [(x.name, x.version) for x in latest_kernel_pkgs if x.name in auto_kernel_pkg_names and x not in auto_kernel_pkgs]
-        keeper_list = [(x.name, x.version) for x in auto_kernel_pkgs if not superseded_in(x, auto_kernel_pkgs) and (x.name, x.version) not in current_list]
-        manual_list = [(x.name, x.version) for x in manual_kernel_pkgs]
-        available_list = [(x.name, x.version) for x in new_kernel_pkgs]
+        current_list = [(x.name, x.version + '-' + x.build) for x in auto_kernel_pkgs if not superseded_in(x, latest_kernel_pkgs)]
+        superseded_list = [(x.name, x.version + '-' + x.build) for x in auto_kernel_pkgs if superseded_in(x, auto_kernel_pkgs)]
+        upgradable_list = [(x.name, x.version + '-' + x.build) for x in latest_kernel_pkgs if x.name in auto_kernel_pkg_names and x not in auto_kernel_pkgs]
+        keeper_list = [(x.name, x.version + '-' + x.build) for x in auto_kernel_pkgs if not superseded_in(x, auto_kernel_pkgs) and (x.name, x.version) not in current_list]
+        manual_list = [(x.name, x.version + '-' + x.build) for x in manual_kernel_pkgs]
+        available_list = [(x.name, x.version + '-' + x.build) for x in new_kernel_pkgs]
 
         print_pairs_or(current_list, 'Up-to-date kernel packages:', 'No up-to-date kernel packages')
         print_pairs_or(upgradable_list, 'Newly available versions of kernel packages (would be installed by kernel-upgrade):', 'No upgradable kernel packages')
@@ -2644,7 +2644,7 @@ try:
         if len(outdated_kernel_pkgs) == 0:
             print 'No obsolete kernel packages found'
             sys.exit()
-        print_pairs_or([(x.name, x.version) for x in outdated_kernel_pkgs], 'Superseded kernel packages to be removed:', 'No superseded kernel packages to remove')
+        print_pairs_or([(x.name, x.version + '-' + x.build) for x in outdated_kernel_pkgs], 'Superseded kernel packages to be removed:', 'No superseded kernel packages to remove')
         if "kernel-source" in [x.name for x in outdated_kernel_pkgs]:
             print "You may wish to run a 'make clean' or 'make distclean' in kernel source directories before removing the package"
         maybe_confirm_continue()
