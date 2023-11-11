@@ -1897,6 +1897,7 @@ if __name__ == "__main__":
             'list-foreign':             0,
             'list-frozen':              0,
             'list-installed':           0,
+            'list-kernels':             0,
             'list-local':               0,
             'list-new':                 0,
             'list-not-installed':       0,
@@ -2279,6 +2280,9 @@ if __name__ == "__main__":
                 sys.exit()
 
             opmap = { 'upgrade': 'install', 'download-upgrades': 'download', 'urls-upgrades': 'urls' }
+            if operation == 'upgrade':
+                # BCS: don't upgrade kernel packages except via an explicit kernel-upgrade command
+                names = [x for x in names if not x.startswith(slackroll_kernel_pkg_indicator)]
             install_operations_family(opmap[operation], names, local_list, remote_list, persistent_list, use_pasture=False)
             sys.exit()
 
@@ -2689,13 +2693,45 @@ if __name__ == "__main__":
             remove_pkgs(to_be_removed)
             sys.exit()
 
+        if operation == 'list-kernels':
+            auto_kernel_pkgs = concat([local_list[x] for x in local_list if x.startswith(slackroll_kernel_pkg_indicator) and (persistent_list[x] == slackroll_state_installed or persistent_list[x] == slackroll_state_outdated)])
+            manual_kernel_pkgs = concat([local_list[x] for x in local_list if x.startswith(slackroll_kernel_pkg_indicator) and (persistent_list[x] == slackroll_state_frozen or persistent_list[x] == slackroll_state_foreign)])
+            latest_kernel_pkgs = concat([remote_list[x] for x in remote_list if x.startswith(slackroll_kernel_pkg_indicator) and not (persistent_list[x] == slackroll_state_frozen or persistent_list[x] == slackroll_state_foreign)])
+            new_kernel_pkgs = concat([remote_list[x] for x in remote_list if x.startswith(slackroll_kernel_pkg_indicator) and persistent_list[x] == slackroll_state_new])
+
+            auto_kernel_pkg_names = [x.name for x in auto_kernel_pkgs]
+            current_list = [(x.name, x.version + '-' + x.build) for x in auto_kernel_pkgs if not superseded_in(x, latest_kernel_pkgs)]
+            superseded_list = [(x.name, x.version + '-' + x.build) for x in auto_kernel_pkgs if superseded_in(x, auto_kernel_pkgs)]
+            upgradable_list = [(x.name, x.version + '-' + x.build) for x in latest_kernel_pkgs if x.name in auto_kernel_pkg_names and x not in auto_kernel_pkgs]
+            keeper_list = [(x.name, x.version + '-' + x.build) for x in auto_kernel_pkgs if not superseded_in(x, auto_kernel_pkgs) and (x.name, x.version + '-' + x.build) not in current_list]
+            manual_list = [(x.name, x.version + '-' + x.build) for x in manual_kernel_pkgs]
+            available_list = [(x.name, x.version + '-' + x.build) for x in new_kernel_pkgs]
+
+            print_pairs_or(current_list, 'Up-to-date kernel packages:', 'No up-to-date kernel packages')
+            print_pairs_or(upgradable_list, 'Newly available versions of kernel packages (would be installed by kernel-upgrade):', 'No upgradable kernel packages')
+            print_pairs_or(superseded_list, 'Superseded kernel packages (would be removed by kernel-clean):', 'No superseded kernel packages')
+            print_pairs_or(keeper_list, 'Near-current kernel packages (superseded in repo, but would not be removed by kernel-clean):', 'No superseded kernel packages that would not be removed by kernel-clean')
+            print_pairs_or(manual_list, 'Manually managed kernel packages (frozen or foreign):', 'No manually managed kernel packages')
+            print_pairs_or(available_list, 'Other available kernel packages:', 'No other kernel packages available for installation or upgrade')
+            sys.exit()
+
         if operation == 'kernel-clean':
-            outdated_kernel_pkgs = [[y for y in local_list[x] if y not in remote_list[x]]
-                    for x in local_list if x.startswith(slackroll_kernel_pkg_indicator) and persistent_list[x] == slackroll_state_installed]
-            outdated_kernel_pkgs = concat(outdated_kernel_pkgs)
+            # BCS: revised logic to remove all but the latest installed version of a kernel- package.
+            # The old logic removed any versions that did not match the latest available in the repo.
+            # This required all local kernel packages to be up-to-date against the repo before running
+            # the kernel-clean operation (or else risk having no installed version of a key package).
+            # The new logic ensures that the only installed version of a kernel package will never
+            # inadvertently be removed by a kernel-clean operation, and allows the user to safely run
+            # kernel-clean at any time, instead of only after a successful kernel-upgrade.
+            auto_kernel_pkgs = concat([local_list[x] for x in local_list if x.startswith(slackroll_kernel_pkg_indicator) and (persistent_list[x] == slackroll_state_installed or persistent_list[x] == slackroll_state_outdated)])
+            outdated_kernel_pkgs = [x for x in auto_kernel_pkgs if superseded_in(x, auto_kernel_pkgs)]
             if len(outdated_kernel_pkgs) == 0:
                 print('No obsolete kernel packages found')
                 sys.exit()
+            print_pairs_or([(x.name, x.version + '-' + x.build) for x in outdated_kernel_pkgs], 'Superseded kernel packages to be removed:', 'No superseded kernel packages to remove')
+            if "kernel-source" in [x.name for x in outdated_kernel_pkgs]:
+                print "You may wish to run a 'make clean' or 'make distclean' in kernel source directories before removing the package"
+            maybe_confirm_continue()
             remove_pkgs(outdated_kernel_pkgs)
             post_kernel_operation()
             sys.exit()
