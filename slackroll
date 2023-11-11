@@ -1156,6 +1156,24 @@ def print_list_or(the_list, header, message_on_empty): # Idem using interceptor 
     print_list(the_list, header)
     interceptor.stop()
 
+# BCS: useful for printing version numbers within some commands, e.g. maintaining kernel packages
+def print_pairs_or(the_list, header, message_on_empty):
+    if len(the_list) == 0:
+        print message_on_empty
+        return
+    interceptor = SlackrollOutputInterceptor()
+    print header
+    the_list.sort()
+    for (a, b) in the_list:
+        print ' %s (%s)' % (a, b)
+    interceptor.stop()
+
+def superseded_in(pkg, the_list):
+    name = pkg.name
+    old_version = version.parse(pkg.version)
+    newer_pkgs = [x for x in the_list if x.name == name and (version.parse(x.version) > old_version or version.parse(x.version) == old_version and x.build > pkg.build)]
+    return len(newer_pkgs) > 0
+
 def tr_pkg_detail(local_list, remote_list, persistent_list, pkg_name): # Returns a string with package details for a transient package
     if persistent_list[pkg_name] != slackroll_state_new:
         return ''
@@ -1851,14 +1869,25 @@ if __name__ == "__main__":
             'erase-tmp':                0,
             'erase-all':                0,
             'foreign':                  -1,
+            'foreign-upgradable':       0,
+            'foreign-upgradeable':      0,
             'frozen':                   -1,
+            'frozen-upgradable':        0,
+            'frozen-upgradeable':       0,
             'freeze':                   -1,
             'full-changelog':           0,
             'help':                     -2,
             'import-key':               0,
             'info':                     -1,
+            'info-foreign':             0,
+            'info-frozen':              0,
+            'info-installed':           0,
             'info-new':                 0,
+            'info-not-installed':       0,
+            'info-outdated':            0,
             'info-path':                -1,
+            'info-transient':           0,
+            'info-unavailable':         0,
             'install':                  -1,
             'install-foreign':          -1,
             'install-new':              0,
@@ -1903,6 +1932,8 @@ if __name__ == "__main__":
             'remove-repo':              -1,
             'remove-unavailable':       0,
             'replace':                  2,
+            'search-name':              -1,
+            'search-path':              -1,
             'set-mirror':               1,
             'set-primary-mirror':       1,
             'state':                    -1,
@@ -2297,22 +2328,22 @@ if __name__ == "__main__":
                 print('\n'.join('WARNING: extraneous file %s' % x for x in extraneous_files))
             sys.exit()
 
-        if operation in ['list-upgrades', 'list-outdated-frozen']:
-            if operation == 'list-upgrades':
+        if operation in ['list-upgrades', 'list-upgradable', 'list-upgradeable', 'list-outdated-frozen']:
+            if operation in ['list-upgrades', 'list-upgradable', 'list-upgradeable']:
                 names = pkgs_in_state(persistent_list, [slackroll_state_outdated])
             else: # list-outdated-frozen
                 names = pkgs_in_state(persistent_list, [slackroll_state_frozen])
                 names = [x for x in names if not up_to_date(local_list[x], not_pasture(remote_list[x]))]
 
             if len(names) == 0:
-                if operation == 'list-upgrades':
+                if operation in ['list-upgrades', 'list-upgradable', 'list-upgradeable']:
                     print('No outdated packages')
                 else: # list-outdated-frozen
                     print('No frozen packages would be outdated')
                 sys.exit()
 
             interceptor = SlackrollOutputInterceptor()
-            if operation == 'list-upgrades':
+            if operation in ['list-upgrades', 'list-upgradable', 'list-upgradeable']:
                 print('Available upgrades:')
             else: # list-outdated-frozen
                 print('Would be outdated:')
@@ -2329,7 +2360,7 @@ if __name__ == "__main__":
                 print()
             print('End of list')
 
-            if operation == 'list-upgrades':
+            if operation in ['list-upgrades', 'list-upgradable', 'list-upgradeable']:
                 maybe_print_key_pkg_watchout(persistent_list)
             interceptor.stop()
             sys.exit()
@@ -2394,6 +2425,21 @@ if __name__ == "__main__":
             interceptor.stop()
             sys.exit()
 
+        # BCS: easier access to info files for interesting package categories
+        if operation in ['info-outdated', 'info-unavailable', 'info-installed', 'info-not-installed', 'info-frozen', 'info-foreign', 'info-transient']:
+            state_str = operation.replace('info-', '')
+            if state_str == 'transient':
+                states = slackroll_transient_states
+            else:
+                states = [slackroll_state_strings.index(state_str)]
+            names = pkgs_in_state(persistent_list, states)
+            names.sort(cmp=pkg_name_cmp)
+            if len(names) == 0:
+                print 'No %s packages' % state_str
+            else:
+                install_operations_family('info', names, local_list, remote_list, persistent_list)
+            sys.exit()
+            
         if operation in ['list-outdated', 'list-unavailable', 'list-installed', 'list-not-installed', 'list-frozen', 'list-foreign']:
             state_str = operation.replace('list-', '')
             header = '%s packages:' % state_str.capitalize()
@@ -2404,6 +2450,23 @@ if __name__ == "__main__":
             print_in_states_or([state], persistent_list, header, empty_message, False)
             if state in slackroll_transient_states:
                 maybe_print_key_pkg_watchout(persistent_list)
+            interceptor.stop()
+            sys.exit()
+
+        # BCS: see packages that might have been previously marked as foreign, but are now available in the repo,
+        #      or that were manually frozen, but could be upgraded if unfrozen
+        if operation in ['foreign-upgradable', 'foreign-upgradeable', 'frozen-upgradable', 'frozen-upgradeable']:
+            state_str = operation.replace('-upgradable', '').replace('-upgradeable', '')
+            state = slackroll_state_strings.index(state_str)
+            header = 'Upgradable %s packages:' % state_str
+            empty_message = 'No upgradable %s packages found' % state_str
+
+            local_pkgs = concat([local_list[x] for x in local_list if persistent_list[x] == state])
+            repo_pkgs = concat([remote_list[x] for x in remote_list if persistent_list[x] == state])
+            newer_available_pkgs = [x for x in local_pkgs if superseded_in(x, repo_pkgs)]
+
+            interceptor = SlackrollOutputInterceptor()
+            print_pairs_or([(x.name, x.version + ' installed, ' + ', '.join([y.version for y in repo_pkgs if y.name == x.name]) + ' available') for x in newer_available_pkgs], header, empty_message)
             interceptor.stop()
             sys.exit()
 
@@ -2641,7 +2704,7 @@ if __name__ == "__main__":
             post_kernel_operation()
             sys.exit()
 
-        if operation == 'name-search':
+        if operation in ['name-search', 'search-name']:
             all_regexes = '|'.join('(?:%s)' % x for x in args)
             try:
                 regexp = re.compile(all_regexes)
@@ -2652,7 +2715,7 @@ if __name__ == "__main__":
             print_in_states_or(slackroll_all_states, plist_subset, 'Matching packages:', 'No matching packages found', True)
             sys.exit()
 
-        if operation == 'path-search':
+        if operation in ['path-search', 'search-path']:
             all_regexes = '|'.join('(?:%s)' % x for x in args)
             try:
                 regexp = re.compile(all_regexes)
