@@ -917,7 +917,7 @@ def import_key(filename):
 def verify_signature(filename):    # Does not exit on errors
     try:
         print('Verifying signature %s ... ' % os.path.basename(filename))
-        retcode = subprocess.call([gnupg_exec_name, '--verify', str(filename)], stdout=open(os.path.devnull, 'w'), stderr=subprocess.STDOUT)
+        retcode = subprocess.call([gnupg_exec_name, '--verify', filename], stdout=open(os.path.devnull, 'w'), stderr=subprocess.STDOUT)
         if retcode != 0:
             write_to_pipe(sys.stderr, 'ERROR: signature verification failed: %s\n' % filename)
             raise SlackrollError('GnuPG exited with status code %s' % retcode)
@@ -1029,7 +1029,7 @@ def update_changelog(mirror, full=False): # Returns answer to "has it been updat
             new_line = conn.readline()
             if len(new_line) == 0 or new_line.strip() in limits:
                 break
-            lines.append(str(new_line))
+            lines.append(new_line)
         conn.close()
     except (OSError, IOError, socket.error, urllib.error.ContentTooShortError) as err:
         sys.exit('\nERROR: %s' % err)
