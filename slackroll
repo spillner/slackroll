@@ -39,6 +39,13 @@ if PY2:
 else:
     import dbm
 
+# Workaround for Unicode/bytestring handling differences between Python 2 and 3
+if PY2:
+    def print(message=""):
+        write_to_pipe(sys.stdout, message + "\n")
+else:
+    sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='UTF-8', buffering=1)
+
 import bz2
 import pickle
 import io
@@ -398,8 +405,36 @@ def clentrylist_from_text(text):
     entries = [x for x in entries if len(x) > 0]
     return [clentry_from_text(x) for x in entries]
 
-def print_flush(message):
-    sys.stdout.write(message)
+# dbm on Python 2 only accepts encoded strings as keys, not general Unicode
+def to_dbkey(x):
+    if isinstance(x, str):
+        return x
+    return x.encode("UTF-8")
+
+# Attempt to determine/use the system-set encoding for the given file or pipe
+def output_encoding(stream):
+    try:
+        if stream.encoding is None:
+            return "UTF-8"
+        else:
+            return stream.encoding
+    except (AttributeError, TypeError):
+        pass
+    return "UTF-8"
+
+# Consolidate writes in one place to handle string/representation conversions between Python 2 & 3
+# Use force_encoding when the source of the text was itself a pipe (e.g. pager program)
+def write_to_pipe(fd, text, force_encoding=False):
+    encoding = output_encoding(fd)
+    if PY2:
+        fd.write(text.decode(encoding))
+    elif force_encoding:
+        fd.write(text.encode(encoding))
+    else:
+        fd.write(text)
+
+def print_flush(message=""):
+    write_to_pipe(sys.stdout, message)
     sys.stdout.flush()
 
 def concat(list_of_lists):
@@ -769,17 +804,17 @@ class SlackrollOutputInterceptor(object): # Intercepts stdout and uses a pager i
         numlines = output.count('\n')
         if needs_pager(numlines):
             proc = call_pager()
-            proc.stdin.write(output)
+            write_to_pipe(proc.stdin, output, True)
             proc.stdin.close()
             proc.wait()
         else:
-            sys.stdout.write(output)
+            write_to_pipe(sys.stdout, output)
 
 def run_program(arg_list, env=None): # Does not exit on errors
     try:
         subprocess.call(arg_list, env=env)
     except (OSError, IOError) as err:
-        sys.stderr.write('ERROR: %s\n' % err)
+        write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
 
 def run_visual_on(file_path): # Does not exit on errors
     run_program(get_visual().split() + [file_path])
@@ -794,7 +829,7 @@ def try_to_remove(file_path, fatal=True): # When it returns, it is True if file 
         os.remove(file_path)
         return True
     except (OSError, IOError) as err:
-        sys.stderr.write('ERROR: %s\n' % err)
+        write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
         if fatal:
             sys.exit(slackroll_exit_failure)
         return False
@@ -804,7 +839,7 @@ def try_to_rename(src, dest, fatal=True): # When it returns, it is True if file 
         os.rename(src, dest)
         return True
     except (OSError, IOError) as err:
-        sys.stderr.write('ERROR: %s\n' % err)
+        write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
         if fatal:
             sys.exit(slackroll_exit_failure)
         return False
@@ -823,14 +858,14 @@ def download_file(mirror, filepath, local_temp, local_final, displayed_name=None
         if displayed_name is None:
             displayed_name = os.path.basename(filepath)
         print_flush('Downloading %s ... ' % displayed_name)
-        full_url = urllib.parse.urljoin(mirror, filepath)
+        full_url = urllib.parse.urljoin(str(mirror), str(filepath))
         hook = None if slackroll_batch_mode else functools.partial(download_report_hook, displayed_name)
         urllib.request.urlretrieve(full_url, local_temp, hook)
         print()
         if not try_to_rename(local_temp, local_final, fatal=False):
             raise SlackrollError('rename error: %s => %s' % (local_temp, local_final))
     except (OSError, IOError, socket.error, urllib.error.ContentTooShortError) as err:
-        sys.stderr.write('\nERROR: %s\n' % err)
+        write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
         raise SlackrollError(str(err))
 
 def download(mirror, filepath, localdir, displayed_name=None): # Wrapper that does NOT exit on errors
@@ -882,12 +917,12 @@ def import_key(filename):
 def verify_signature(filename):    # Does not exit on errors
     try:
         print('Verifying signature %s ... ' % os.path.basename(filename))
-        retcode = subprocess.call([gnupg_exec_name, '--verify', filename], stdout=open(os.path.devnull, 'w'), stderr=subprocess.STDOUT)
+        retcode = subprocess.call([gnupg_exec_name, '--verify', str(filename)], stdout=open(os.path.devnull, 'w'), stderr=subprocess.STDOUT)
         if retcode != 0:
-            sys.stderr.write('ERROR: signature verification failed: %s\n' % filename)
+            write_to_pipe(sys.stderr, 'ERROR: signature verification failed: %s\n' % filename)
             raise SlackrollError('GnuPG exited with status code %s' % retcode)
     except (OSError, IOError) as err:
-        sys.stderr.write('ERROR: %s\n' % err)
+        write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
         raise SlackrollError(str(err))
 
 def upgrade_or_install(filename, reinstall): # upgradepkg
@@ -994,7 +1029,7 @@ def update_changelog(mirror, full=False): # Returns answer to "has it been updat
             new_line = conn.readline()
             if len(new_line) == 0 or new_line.strip() in limits:
                 break
-            lines.append(new_line)
+            lines.append(str(new_line))
         conn.close()
     except (OSError, IOError, socket.error, urllib.error.ContentTooShortError) as err:
         sys.exit('\nERROR: %s' % err)
@@ -1058,7 +1093,7 @@ def key_pkg_in(name_list): # Does any name match with a prioritized package?
     return (len(set(slackroll_prioritized_pkgs).intersection(set(name_list))) > 0)
 
 def key_transient_pkgs(persistent_list):
-    return [x for x in slackroll_prioritized_pkgs if x in persistent_list and persistent_list[x] in slackroll_transient_states]
+    return [x for x in slackroll_prioritized_pkgs if to_dbkey(x) in persistent_list and persistent_list[x] in slackroll_transient_states]
 
 def key_pkg_activity_pending(persistent_list): # True if any new, outdated or unavailable package is prioritized
     return (len(key_transient_pkgs(persistent_list)) > 0)
@@ -1180,9 +1215,9 @@ def tr_pkg_detail(local_list, remote_list, persistent_list, pkg_name): # Returns
     return ' '.join(x.path for x in remote_list[pkg_name])
 
 def error_unknown_packages(name_list): # Print package names as unknown and exit with error
-    sys.stderr.write(''.join('WARNING: %s looks like an unexpected full version\n' % x for x in name_list if may_be_full_version(x)))
-    sys.stderr.write('ERROR: The following packages are unknown:\n')
-    sys.stderr.write(''.join('ERROR:    %s\n' % x for x in name_list))
+    write_to_pipe(sys.stderr, ''.join('WARNING: %s looks like an unexpected full version\n' % x for x in name_list if may_be_full_version(x)))
+    write_to_pipe(sys.stderr, 'ERROR: The following packages are unknown:\n')
+    write_to_pipe(sys.stderr, ''.join('ERROR:    %s\n' % x for x in name_list))
     sys.exit(slackroll_exit_failure)
 
 def maybe_error_unknown_packages(name_list, by_name):
@@ -1231,7 +1266,7 @@ def handle_dotnew_files_installation_batch(dotnew_files): # Handles .new files p
             new_exists = os.path.exists(newfile)
             old_exists = os.path.exists(oldfile)
         except (OSError, IOError) as err:
-            sys.stderr.write('ERROR: %s\n' % err)
+            write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
             break
 
         if new_exists and old_exists: # Both
@@ -1270,7 +1305,7 @@ def handle_dotnew_files_installation_interactive(dotnew_files): # Handles .new f
                 new_exists = os.path.exists(newfile)
                 old_exists = os.path.exists(oldfile)
             except (OSError, IOError) as err:
-                sys.stderr.write('ERROR: %s\n' % err)
+                write_to_pipe(sys.stderr, 'ERROR: %s\n' % err)
                 break
 
             print('\n%s %s' % (['Reviewing', 'Still reviewing'][pair_iterations > 1], newfile))
@@ -1743,9 +1778,9 @@ def verify_operation_and_args(op_num_args, operation, args): # Verify number of 
         best_matches.sort()
 
         # Print the error and the list.
-        sys.stderr.write('ERROR: no operation called "%s"\n' % (operation, ))
-        sys.stderr.write('Use the "help" operation to get a list.\n')
-        sys.stderr.write('Did you mean %s?\n' % ' or '.join('"%s"' % ('-'.join(x), ) for x in best_matches))
+        write_to_pipe(sys.stderr, 'ERROR: no operation called "%s"\n' % (operation, ))
+        write_to_pipe(sys.stderr, 'Use the "help" operation to get a list.\n')
+        write_to_pipe(sys.stderr, 'Did you mean %s?\n' % ' or '.join('"%s"' % ('-'.join(x), ) for x in best_matches))
         sys.exit(slackroll_exit_failure)
     else:
         verify_num_args(op_num_args[operation], operation, args)
@@ -2289,7 +2324,7 @@ if __name__ == "__main__":
             sys.exit()
 
         if operation in ['upgrade-key-packages', 'download-key-packages', 'urls-key-packages']:
-            names = [x for x in slackroll_prioritized_pkgs if x in persistent_list and persistent_list[x] == slackroll_state_outdated]
+            names = [x for x in slackroll_prioritized_pkgs if to_dbkey(x) in persistent_list and persistent_list[x] == slackroll_state_outdated]
             if len(names) == 0:
                 print('No outdated key system packages')
                 sys.exit()
@@ -2592,8 +2627,8 @@ if __name__ == "__main__":
             # Verify readable files
             bad_files = [x for x in args if not is_readable_file(x)]
             if len(bad_files) > 0:
-                sys.stderr.write('ERROR: the following items are not readable files:\n')
-                sys.stderr.write(''.join('ERROR:    %s\n' % x for x in bad_files))
+                write_to_pipe(sys.stderr, 'ERROR: the following items are not readable files:\n')
+                write_to_pipe(sys.stderr, ''.join('ERROR:    %s\n' % x for x in bad_files))
                 sys.exit(slackroll_exit_failure)
 
             # Verify and get package names
@@ -2603,10 +2638,10 @@ if __name__ == "__main__":
                 sys.exit('ERROR: %s' % err)
 
             # The packages must not be present in persistent list or be foreign already
-            bad_pkgs = [x for x in pkgs if x.name in persistent_list and persistent_list[x.name] != slackroll_state_foreign]
+            bad_pkgs = [x for x in pkgs if to_dbkey(x.name) in persistent_list and persistent_list[x.name] != slackroll_state_foreign]
             if len(bad_pkgs) > 0:
-                sys.stderr.write('ERROR: the following packages are known and not foreign\n')
-                sys.stderr.write(''.join('ERROR:    %s\n' % x.name for x in bad_pkgs))
+                write_to_pipe(sys.stderr, 'ERROR: the following packages are known and not foreign\n')
+                write_to_pipe(sys.stderr, ''.join('ERROR:    %s\n' % x.name for x in bad_pkgs))
                 sys.exit(slackroll_exit_failure)
 
             # Get .new files from old packages
@@ -2632,7 +2667,7 @@ if __name__ == "__main__":
             for name in args:
                 if name not in persistent_list:
                     if may_be_full_version(name):
-                        sys.stderr.write('WARNING: %s looks like an unexpected full version\n' % name)
+                        write_to_pipe(sys.stderr, 'WARNING: %s looks like an unexpected full version\n' % name)
                     sys.exit('ERROR: no package named %s' % name)
 
             unavpkg = args[0]
@@ -2762,16 +2797,16 @@ if __name__ == "__main__":
 
     except (KeyboardInterrupt, IOError, EOFError) as error:
         if isinstance(error, KeyboardInterrupt):
-            sys.stderr.write('\nProgram aborted by user\n')
+            write_to_pipe(sys.stderr, '\nProgram aborted by user\n')
         if persistent_list is not None:
             persistent_list.close()
         sys.exit(slackroll_exit_failure)
     except SlackrollBatchModeError:
-        sys.stderr.write('\nProgram aborted because operation could not be completed in batch mode\n')
+        write_to_pipe(sys.stderr, '\nProgram aborted because operation could not be completed in batch mode\n')
         if persistent_list is not None:
             persistent_list.close()
         sys.exit(slackroll_exit_failure)
     except IndexError:
-        sys.stderr.write('ERROR: no operation given\n')
-        sys.stderr.write('Use "help" operation to get a list\n')
+        write_to_pipe(sys.stderr, 'ERROR: no operation given\n')
+        write_to_pipe(sys.stderr, 'Use "help" operation to get a list\n')
         sys.exit(slackroll_exit_failure)
