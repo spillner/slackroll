@@ -582,10 +582,19 @@ def print_blacklist():
     numbered = ['%-4s  %s' % (x, bl[x]) for x in range(len(bl))]
     print_list_or(numbered, 'Blacklisted expressions:', 'No blacklisted expressions')
 
+def clean_filename(s, encoding="latin1"):
+    if PY2:
+        return s.strip().decode('string_escape')
+    else:
+        if encoding == "latin1":
+            return s.strip().encode(encoding).decode('unicode-escape')
+        else:
+            return s.strip().encode(encoding).decode('unicode-escape').encode("latin1").decode(encoding)
+
 def extract_file_list(filename): # Extracts the file list from a local info file
     try:
         lines = open(filename, 'r').readlines()
-        paths = ['/%s' % x.strip().decode('string_escape') for x in lines[lines.index(slackroll_local_pkg_filelist_marker) + 1:]]
+        paths = ['/%s' % clean_filename(x) for x in lines[lines.index(slackroll_local_pkg_filelist_marker) + 1:]]
         return paths
     except ValueError:
         sys.exit('ERROR: unable to find file list marker in %s' % filename)
