@@ -2480,7 +2480,7 @@ if __name__ == "__main__":
             else:
                 states = [slackroll_state_strings.index(state_str)]
             names = pkgs_in_state(persistent_list, states)
-            names.sort(cmp=pkg_name_cmp)
+            names.sort(functools.cmp_to_key(pkg_name_cmp))
             if len(names) == 0:
                 print('No %s packages' % state_str)
             else:
