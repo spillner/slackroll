@@ -30,8 +30,6 @@ from builtins import str
 import sys
 import io
 
-debug_output = True
-
 PY2 = sys.version_info[0] <= 2
 
 if PY2:
@@ -191,12 +189,6 @@ slackroll_manifest_basename = 'MANIFEST.bz2'
 slackroll_manifest_filename = os.path.join(slackroll_base_dir, 'manifest.db')
 slackroll_manifest_list_filename = os.path.join(slackroll_base_dir, 'manifestlist.db')
 slackroll_batch_mode = False
-
-def debug_mesg(mesg):
-    if debug_output:
-        sys.stderr.write(mesg)
-    else:
-        return
 
 def yield_slackroll_local_pkgs_dir():
     for opt in slackroll_local_pkgs_dir_names:
