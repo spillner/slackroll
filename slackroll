@@ -1358,7 +1358,7 @@ def print_pairs_or(the_list, header, message_on_empty):
 # slackware-current's latest version of python-packaging (24.0 for Python 3.11) will throw
 # an exception on such strings.
 def str_to_version_list(s):
-    return re.split("\.|-|\+", s)
+    return re.split(r'\.|-|\+', s)
 
 # Compare two lists representing the components of a version string. Uses numerical comparison if
 # two elements in the same position are both decimal digit strings (e.g. so "11" will test as
