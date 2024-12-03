@@ -1593,7 +1593,7 @@ def print_list_or(the_list, header, message_on_empty): # Idem using interceptor 
 # and/or underscores as part of the version string (as many SlackBuilds do).
 def str_to_version_list(s):
     # type: (str) -> List[str]
-    return re.split("\.|-|\+", s)
+    return re.split(r'\.|-|\+', s)
 
 # True iff the provided string consists only of decimal digits
 def all_digits(s):
