@@ -1559,6 +1559,51 @@ def print_list_or(the_list, header, message_on_empty): # Idem using interceptor 
     print_list(the_list, header)
     interceptor.stop()
 
+# Break a version string into a list of (string) components separated by . or - or +
+# This is NOT as strict as the standard packaging.version library or PEP 440, but the
+# additional flexibility is required to handle packages that use hexadecimal hash numbers
+# and/or underscores as part of the version string (as many SlackBuilds do).
+def str_to_version_list(s):
+    # type: (str) -> List[str]
+    return re.split("\.|-|\+", s)
+
+# Compare two lists representing the components of a version string. Uses numerical comparison if
+# two elements in the same position are both decimal digit strings (e.g. so "11" will test as
+# less than "101"), otherwise tests in lexicographical order (so "b101" tests as less than "b11").
+def version_list_cmp(v1, v2):
+    # type: (List[str], List[str]) -> bool
+    if not v1 and not v2:
+        return 0
+    elif v1 and not v2:
+        return 1
+    elif v2 and not v1:
+        return -1
+
+    if v1[0].isdigit() and v2[0].isdigit():
+        key1, key2 = int(v1[0]), int(v2[0])
+    else:
+        key1, key2 = v1[0], v2[0]
+    if key1 == key2:
+        return version_list_cmp(v1[1:], v2[1:])
+    elif key1 < key2:
+        return -1
+    else:
+        return 1
+
+def versions_equal(str1, str2):
+    # type: (str, str) -> bool
+    return version_list_cmp(str_to_version_list(str1), str_to_version_list(str2)) == 0
+
+def first_is_newer(str1, str2):
+    # type: (str, str) -> bool
+    return version_list_cmp(str_to_version_list(str1), str_to_version_list(str2)) > 0
+
+# True iff the given package has a newer version available in the provided list
+def superseded_in(pkg, the_list):
+    # type: (SlackwarePackage, List[SlackwarePackage]) -> bool
+    newer_pkgs = [x for x in the_list if x.name == pkg.name and (first_is_newer(x.version, pkg.version) or versions_equal(x.version, pkg.version) and x.build > pkg.build)]
+    return len(newer_pkgs) > 0
+
 def tr_pkg_detail(local_list, remote_list, persistent_list, pkg_name): # Returns a string with package details for a transient package
     # type: (Dict[str, List[SlackwarePackage]], Dict[str, List[SlackwarePackage]], Dict[str, int], str) -> str
     if persistent_list[pkg_name] != slackroll_state_new:
@@ -2076,9 +2121,12 @@ def is_dotnew_file(path):
     # type: (str) -> bool
     return os.path.isfile(path) and not os.path.islink(path) and path.endswith(slackroll_new_suffix)
 
-def up_to_date(local_versions, remote_versions): # Is the local package up to date?
+def up_to_date(local_versions, remote_versions): # True iff any local copy is at least as new as the latest remote version
     # type: (List[SlackwarePackage], List[SlackwarePackage]) -> bool
-    return (len([x for x in local_versions if x in remote_versions]) > 0)
+    for pkg in local_versions:
+        if not superseded_in(pkg, remote_versions):
+            return True
+    return False
 
 def outdated_or_installed(local_versions, remote_versions): # Returns outdated or installed state depending on up_to_date()
     # type: (List[SlackwarePackage], List[SlackwarePackage]) -> int
