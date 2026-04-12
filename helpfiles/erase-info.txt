@@ -1,0 +1,7 @@
+
+erase-info
+
+This operation expects no arguments. It will remove all archived package info
+(.txt) files from the cache.
+
+Also see: erase-all.
