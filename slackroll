@@ -241,6 +241,8 @@ slackroll_state_foreign = 5
 slackroll_state_outdated = 6
 slackroll_state_strings = ['new', 'unavailable', 'installed', 'not-installed', 'frozen', 'foreign', 'outdated']
 slackroll_transient_states = [slackroll_state_new, slackroll_state_outdated, slackroll_state_unavailable]
+slackroll_locally_installed_states = [slackroll_state_installed, slackroll_state_foreign, slackroll_state_frozen,
+                                      slackroll_state_outdated, slackroll_state_unavailable]
 slackroll_all_states = [x for x in range(len(slackroll_state_strings))]
 
 slackroll_socket_timeout = 120
@@ -968,7 +970,7 @@ def extend_remote_list(local_filelist, remote_list, pkgs_url=None):
         else:
             remote_list[name] = not_main_or_extra(remote_list[name])
 
-def get_remote_list(): # Return list of remote packages from cached list, updating if needed
+def get_remote_list(): # Return list of remote packages from cached list
     # type: () -> Dict[str, List[SlackwarePackage]]
     return try_load(slackroll_remotelist_filename) # type: ignore
 
@@ -2240,7 +2242,7 @@ def analyze_changes(local_list, remote_list, persistent_list): # XXX THIS FUNCTI
             state = persistent_list[name]
             if state in [slackroll_state_unavailable]:
                 persistent_list[name] = slackroll_state_new
-            elif state in [slackroll_state_installed, slackroll_state_outdated, slackroll_state_foreign, slackroll_state_frozen]:
+            elif state in slackroll_locally_installed_states:
                 persistent_list[name] = slackroll_state_notinstalled
         else:
             # Introduce them as new unless they are only present in /pasture/
@@ -2336,8 +2338,8 @@ def words_to_words_distance(words1, words2): # Distance between two lists of wor
     # against the words of the other list, plus the difference in words.
     return (sum(word_to_word_list_distance(i, words2) for i in words1) + abs(len(words1) - len(words2)))
 
-def load_persistent_db(filename):
-    # type: (str) -> Dict[str, int]
+def load_persistent_db(filename, readonly = False):
+    # type: (str, bool) -> Dict[str, int]
     # Internally, shelve uses anydbm.open which defaults to dbhash on Python2.
     # That module has been removed in Python3. To prepare for the Python3
     # upgrade, we are going to switch the format used for the persistent.db file
@@ -2351,9 +2353,9 @@ def load_persistent_db(filename):
     # to have used this version and have the existing files upgraded. New
     # installations will immediately default to the new format. We can then
     # ship the python3 version safely.
-    data = shelve.open(filename, 'c', pickle_protocol)
+    data = shelve.open(filename, 'r' if readonly else 'c', pickle_protocol)
 
-    if not needs_db_upgrade(data.dict): # type: ignore
+    if readonly or not needs_db_upgrade(data.dict): # type: ignore
         return data # type: ignore
 
     tmpdir = get_temp_dir()
@@ -2446,6 +2448,18 @@ if __name__ == "__main__":
             'print-blacklist':          0,
             'print-mirror':             0,
             'print-primary-mirror':     0,
+            'raw-cmds-expect-foreign':  -2,
+            'raw-cmds-expect-frozen':   -2,
+            'raw-cmds-expect-local':    -2,
+            'raw-cmds-expect-path':     -2,
+            'raw-cmds-expect-remote':   -2,
+            'raw-cmds-expect-rpath':    -2,
+            'raw-cmds-expect-url':      -2,
+            'raw-list-cmds':            -2,
+            'raw-list-foreign':         -2,
+            'raw-list-frozen':          -2,
+            'raw-list-local':           -2,
+            'raw-list-remote':          -2,
             'reinstall':                -1,
             'remote-paths':             0,
             'remove':                   -1,
@@ -2646,6 +2660,84 @@ if __name__ == "__main__":
             except re.error:
                 sys.exit('ERROR: invalid regular expression')
             search_manifest_database(regexp)
+            sys.exit()
+
+        # raw-cmds-* generate a list of commands expecting the corresponding argument type (useful for autocomplete)
+        if operation == 'raw-cmds-expect-foreign':
+            for cmd in ['unavailable']:
+                print(cmd)
+            sys.exit()
+
+        if operation == 'raw-cmds-expect-frozen':
+            for cmd in ['installed', 'unfreeze']:
+                print(cmd)
+            sys.exit()
+
+        if operation == 'raw-cmds-expect-local':
+            for cmd in ['foreign', 'freeze', 'frozen', 'local-info', 'remove' ]:
+                print(cmd)
+            sys.exit()
+
+        if operation == 'raw-cmds-expect-path':
+            for cmd in ['install-foreign', 'orphan-search', 'broken-symlinks']:
+                print(cmd)
+            sys.exit()
+
+        if operation == 'raw-cmds-expect-remote':
+            for cmd in ['info', 'install', 'new', 'not-installed', 'reinstall', 'replace', 'state', 'urls']:
+                print(cmd)
+            sys.exit()
+
+        if operation == 'raw-cmds-expect-rpath':
+            for cmd in ['download-path', 'info-path', 'install-path', 'remove-path', 'urls-path']:
+                print(cmd)
+            sys.exit()
+
+        if operation == 'raw-cmds-expect-url':
+            for cmd in ['add-repo', 'set-mirror', 'set-primary-mirror']:
+                print(cmd)
+            sys.exit()
+
+        # raw-list-* are also used for autocompletion lists, and never use a pager or header/footer lines
+        if operation == 'raw-list-cmds':
+            for name in op_num_args:
+                print(name)
+            sys.exit()
+
+        # To support autocompletion without root privileges, these commands will work on the last
+        # archived databases, but will not trigger any database rebuilds.
+        # They also do not generate any error messages unless an unhandled exception is caught.
+        if operation.startswith("raw-list-"):
+            if not os.path.exists(slackroll_persistentlist_filename):
+                # No preexisting databases -> no argument autocompletion until an update has been performed
+                sys.exit()
+
+            try:
+                readonly_persistent_list = load_persistent_db(slackroll_persistentlist_filename, True)
+            except dbm.error as err:
+                sys.exit()
+
+            if operation == 'raw-list-foreign':
+                for name in readonly_persistent_list:
+                    if readonly_persistent_list[name] == slackroll_state_foreign and (args == [] or name.startswith(args[0])):
+                            print(name)
+
+            elif operation == 'raw-list-frozen':
+                for name in readonly_persistent_list:
+                    if readonly_persistent_list[name] == slackroll_state_frozen and (args == [] or name.startswith(args[0])):
+                            print(name)
+
+            elif operation == 'raw-list-local':
+                for name in readonly_persistent_list:
+                    if readonly_persistent_list[name] in slackroll_locally_installed_states and (args == [] or name.startswith(args[0])):
+                            print(name)
+
+            elif operation == 'raw-list-remote':
+                for name in readonly_persistent_list:
+                    if args == [] or name.startswith(args[0]):
+                        print(name)
+
+            # Note that this will also fail silently if an unrecognized raw-list- command is received.
             sys.exit()
 
         # Everything after this point requires a writable /var/slackroll

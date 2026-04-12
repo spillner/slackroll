@@ -151,6 +151,21 @@ Other maintenance operations (usually not needed):
   touch			Force update on persistent database
 
 
+Special commands to support autocompletion (not intended for manual use):
+  raw-list-cmds			List every recognized slackroll subcommand
+  raw-list-local		List every recognized local package
+  raw-list-remote		List every recognized remote package
+  raw-list-foreign		List every foreign package
+  raw-list-frozen		List every frozen package
+  raw-cmds-expect-local		Commands expecting one or more local package names
+  raw-cmds-expect-remote	Commands expecting one or more remote package names
+  raw-cmds-expect-foreign	Commands expecting one or more foreign package names
+  raw-cmds-expect-frozen	Commands expecting one or more frozen package names
+  raw-cmds-expect-path		Commands expecting path(s) to a local file or directory
+  raw-cmds-expect-rpath		Commands expecting a regex matching path(s) on a remote mirror
+  raw-cmds-expect-url		Commands expecting a URL
+
+
 Other operations:
 
   help [ARGUMENT]	          Access to the help system
