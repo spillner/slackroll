@@ -18,6 +18,7 @@
 from __future__ import print_function
 
 import bz2
+import errno
 import fcntl
 import functools
 import glob
@@ -771,13 +772,12 @@ def try_dump(object, filepath, unwritable_is_fatal = True): # pickle.dump()
         else:
             # BCS: Pickle protocols > 2 will not be backward-compatible with Python 2
             pickle.dump(object, open(filepath, 'wb'), protocol=pickle_protocol)
-    except (PermissionError) as err:
-        if unwritable_is_fatal:
-            sys.exit('ERROR: %s' % err)
-        else:
-            write_to_stream(sys.stderr, 'WARNING: could not save updates to %s' % filepath)
     except (OSError, IOError, pickle.PickleError) as err:
-        sys.exit('ERROR: %s' % err)
+        permission_problem = err.errno == errno.EACCES or err.errno == errno.EPERM or not PY2 and err.errno == errno.ENOTCAPABLE
+        if permission_problem and not unwritable_is_fatal:
+            write_to_stream(sys.stderr, 'WARNING: could not save updates to %s\n' % filepath)
+        else:
+            sys.exit('ERROR: %s' % err)
 
 def try_load(filepath): # pickle.load()
     # type: (str) -> Any
@@ -910,7 +910,7 @@ def get_local_pkgs(): # Return a list of packages from slackroll_local_pkgs_dir
         sys.exit('ERROR: %s' % err)
     return local_pkgs
 
-def get_local_list(forced_rebuild): # Return list of local packages from cached list, updating it if needed
+def get_local_list(forced_rebuild, needs_writable = True): # Return list of local packages from cached list, updating it if needed
     # type: (bool) -> Dict[str, List[SlackwarePackage]]
     if newer_than(slackroll_local_pkgs_dir, slackroll_locallist_filename) or forced_rebuild:
         print('Rebuilding local package list...')
@@ -926,8 +926,10 @@ def get_local_list(forced_rebuild): # Return list of local packages from cached 
         if len(dupes) > 0:
             print('WARNING: packages with two or more local versions should be frozen or foreign')
             print_seq(dupes, 'WARNING: list of packages with two or more local versions:')
-        try_dump(local_list, slackroll_locallist_filename)
-    return try_load(slackroll_locallist_filename) # type: ignore
+        try_dump(local_list, slackroll_locallist_filename, needs_writable)
+        return local_list
+    else:
+        return try_load(slackroll_locallist_filename) # type: ignore
 
 def ignore_package_path(path):
     # type: (str) -> bool
@@ -1036,7 +1038,7 @@ def get_repo_list():
     # type: () -> List[str]
     if not is_readable_file(slackroll_repolist_filename):
         repo_list = [] # type: List[str]
-        try_dump(repo_list, slackroll_repolist_filename)
+        try_dump(repo_list, slackroll_repolist_filename, False)
     return try_load(slackroll_repolist_filename) # type: ignore
 
 def dump_repo_list(repo_list):
@@ -1202,17 +1204,28 @@ def download_or_exit(mirror, filepath, localdir, displayed_name=None): # Wrapper
     except SlackrollError:
         sys.exit(slackroll_exit_failure)
 
-def handle_writable_dir(dirname): # Make sure dirname is available and writable
-    # type: (str) -> None
+def handle_writable_dir(dirname, exit_on_failure = True): # Make sure dirname is available and writable
+                                                          # Returns True iff both conditions hold 
+    # type: (str) -> bool
     if not os.path.exists(dirname):
         try:
             os.mkdir(dirname)
         except (OSError, IOError) as err:
-            sys.exit('ERROR: %s' % err)
+            if exit_on_failure:
+                sys.exit('ERROR: %s' % err)
+            else:
+                return False
     if not os.path.isdir(dirname):
-        sys.exit('ERROR: %s exists but is not a directory' % dirname)
+        if exit_on_failure:
+            sys.exit('ERROR: %s exists but is not a directory' % dirname)
+        else:
+            return False
     if not os.access(dirname, os.R_OK | os.W_OK):
-        sys.exit('ERROR: directory %s is not available for read and writing (are you root?)' % dirname)
+        if exit_on_failure:
+            sys.exit('ERROR: directory %s is not available for read and writing (are you root?)' % dirname)
+        else:
+            return False
+    return True
 
 def yield_gnupg_exec_name():
     # type: () -> Generator[str, None, None]
@@ -2336,7 +2349,7 @@ def words_to_words_distance(words1, words2): # Distance between two lists of wor
     # against the words of the other list, plus the difference in words.
     return (sum(word_to_word_list_distance(i, words2) for i in words1) + abs(len(words1) - len(words2)))
 
-def load_persistent_db(filename):
+def load_persistent_db(filename, needs_writable = True):
     # type: (str) -> Dict[str, int]
     # Internally, shelve uses anydbm.open which defaults to dbhash on Python2.
     # That module has been removed in Python3. To prepare for the Python3
@@ -2351,7 +2364,8 @@ def load_persistent_db(filename):
     # to have used this version and have the existing files upgraded. New
     # installations will immediately default to the new format. We can then
     # ship the python3 version safely.
-    data = shelve.open(filename, 'c', pickle_protocol)
+    db_mode = 'c' if needs_writable else 'r'
+    data = shelve.open(filename, db_mode, pickle_protocol)
 
     if not needs_db_upgrade(data.dict): # type: ignore
         return data # type: ignore
@@ -2360,7 +2374,7 @@ def load_persistent_db(filename):
     output_name = os.path.join(tmpdir, "persistence.db")
 
     try:
-        new_data = shelve.open(output_name, 'c', pickle_protocol)
+        new_data = shelve.open(output_name, db_mode, pickle_protocol)
         new_data.update(data)
 
         data.close()
@@ -2370,7 +2384,7 @@ def load_persistent_db(filename):
     finally:
         try_to_remove(output_name)
 
-    return shelve.open(filename, 'c', pickle_protocol) # type: ignore
+    return shelve.open(filename, db_mode, pickle_protocol) # type: ignore
 
 
 if __name__ == "__main__":
@@ -2601,7 +2615,7 @@ if __name__ == "__main__":
             interceptor.stop()
             sys.exit()
 
-        # /Technically/ doesn't require root, but will fail (w/ appropriate message) if knownfiles.db doesn't already exist
+        # Doesn't necessarily require root, but will fail (w/ appropriate message) if knownfiles.db doesn't already exist
         if operation == 'orphan-search':
             long_time_warning()
             interpret_results_warning()
@@ -2648,130 +2662,38 @@ if __name__ == "__main__":
             search_manifest_database(regexp)
             sys.exit()
 
-        # Everything after this point requires a writable /var/slackroll
-        handle_writable_dir(slackroll_base_dir)
+        # These operations can work from a read-only copy of the persistent database if necessary
+        # (Although in some cases, if the database is writable, they will update it)
+        have_writable_databases = handle_writable_dir(slackroll_base_dir, False)
 
-        if operation == 'blacklist-add':
-            add_blacklist_exprs(args)
-            sys.exit()
-
-        if operation == 'blacklist-del':
-            del_blacklist_exprs(args)
-            sys.exit()
-
-        if operation == 'set-mirror':
-            set_mirror(args[0])
-            sys.exit()
-
-        if operation == 'set-primary-mirror':
-            set_primary_mirror(args[0])
-            sys.exit()
-
-        if operation == 'add-repo':
-            repo_list = get_repo_list()
-            for r in args:
-                if not r.endswith('/'):
-                    r = r + '/'
-                if r not in repo_list:
-                    repo_list.append(r)
-            dump_repo_list(repo_list)
-            print_repo_mod_advice()
-            sys.exit()
-
-        if operation == 'remove-repo':
-            repo_list = get_repo_list()
-            repo_dict = dict(enumerate(repo_list))
-            valid = [] # type: List[int]
-            invalid = [] # type: List[Union[str, int]]
-            for x in args:
-                try:
-                    num = int(x)
-                    if num in repo_dict:
-                        valid.append(num)
-                    else:
-                        invalid.append(num)
-                except:
-                    invalid.append(x)
-            if len(invalid) > 0:
-                sys.exit('ERROR: invalid repository numbers: %s' % ', '.join(str(x) for x in invalid))
-            for v in valid:
-                del repo_dict[v]
-            repo_list = [repo_dict[x] for x in sorted(repo_dict.keys())]
-            dump_repo_list(repo_list)
-            print_repo_mod_advice()
-            sys.exit()
-
-        if operation in ['erase-cache', 'erase-tmp', 'erase-all']:
-            directories = []
-            if operation in ['erase-cache', 'erase-all']:
-                directories.append(slackroll_pkgs_dir)
-            if operation in ['erase-tmp', 'erase-all']:
-                directories.append(get_temp_dir())
-            files = concat([glob.glob(os.path.join(directory, '*')) for directory in directories])
-            if len(files) == 0:
-                print('No files to remove')
-            else:
-                files.sort() # type: ignore
-                for filename in files:
-                    try_to_remove(filename)
-            sys.exit()
-
-        # Some operations below need to have the temporary directory available to download stuff
-        handle_writable_dir(get_temp_dir())
-
-        if operation == 'import-key':
-            download_or_exit(get_primary_mirror(), slackroll_gpgkey_filename, slackroll_base_dir)
-            import_key(slackroll_local_gpgkey)
-            try_to_remove(slackroll_local_gpgkey)
-            sys.exit()
-
-        if operation == 'download-changelog':
-            update_changelog(get_mirror(), full=True)
-            sys.exit()
-
-        if operation == 'update-manifest':
-            update_manifest_database()
-            sys.exit()
-
-        # Every operation below needs an updated persistent database
-        handle_writable_dir(slackroll_pkgs_dir)
-
-        needs_rebuild = (not os.path.exists(slackroll_self_filename) or get_self_file_version() != slackroll_version)
-        if needs_rebuild or operation == 'update':
-            update_operation(get_mirror())
-        local_list = get_local_list(needs_rebuild)
-        remote_list = get_remote_list()
-
-        needs_analyze = (newer_than(slackroll_remotelist_filename, slackroll_persistentlist_filename)
-                or newer_than(slackroll_locallist_filename, slackroll_persistentlist_filename)
-                or operation == 'touch' or needs_rebuild)
+        if have_writable_databases:
+            needs_rebuild = (not os.path.exists(slackroll_self_filename) or get_self_file_version() != slackroll_version)
+            if needs_rebuild or operation == 'update':
+                update_operation(get_mirror())
+            local_list = get_local_list(needs_rebuild)
+        else:
+            # Can't update the database, so we'll have to work from the archived copy, however old
+            local_list = get_local_list(False, False)
+            needs_rebuild = False
 
         try:
-            persistent_list = load_persistent_db(slackroll_persistentlist_filename)
+            persistent_list = load_persistent_db(slackroll_persistentlist_filename, have_writable_databases)
         except dbm.error as err:
             print('Database exception: %s' % err)
             sys.exit('ERROR: unable to properly open %s' % slackroll_persistentlist_filename)
 
-        if needs_analyze:
+        remote_list = get_remote_list()
+
+        needs_analyze = (newer_than(slackroll_remotelist_filename, slackroll_persistentlist_filename)
+            or newer_than(slackroll_locallist_filename, slackroll_persistentlist_filename)
+            or operation == 'touch' or needs_rebuild)
+
+        if have_writable_databases and needs_analyze:
             analyze_changes(local_list, remote_list, persistent_list)
             os.utime(slackroll_persistentlist_filename, None)
 
-        write_self_file_version()
-
-        if operation == 'update':
-            mirror = get_mirror()
-            print('Package cache size: %s' % optimum_size_conversion(get_pkg_cache_size()))
-            updated = update_changelog(mirror)
-            transient_packages_present = any(persistent_list[x] in slackroll_transient_states for x in persistent_list)
-            if updated or transient_packages_present:
-                print('')
-                if updated:
-                    print('New change log entries found. Use "changelog" to read them.')
-                if transient_packages_present:
-                    print('Found packages in transient states. Use "list-transient" to list them.')
-            sys.exit()
-
-        if operation == 'touch':
+        if operation in ['info', 'urls']:
+            install_operations_family(operation, args, local_list, remote_list, persistent_list)
             sys.exit()
 
         if operation == 'remote-paths':
@@ -2787,63 +2709,6 @@ if __name__ == "__main__":
             maybe_error_unknown_packages(args, persistent_list)
             plist_subset = dict([(x, persistent_list[x]) for x in args])
             print_in_states_or(slackroll_all_states, plist_subset, 'Package states:', 'INTERNAL ERROR: no packages specified', True)
-            sys.exit()
-
-        if operation in ['upgrade', 'download-upgrades', 'urls-upgrades']:
-            if operation == 'upgrade' and maybe_print_new_warning(persistent_list):
-                maybe_confirm_continue()
-
-            names = pkgs_in_state(persistent_list, [slackroll_state_outdated])
-            names.sort(key=pkg_name_key)
-
-            if len(names) == 0:
-                print('No outdated packages')
-                sys.exit()
-
-            opmap = { 'upgrade': 'install', 'download-upgrades': 'download', 'urls-upgrades': 'urls' }
-            install_operations_family(opmap[operation], names, local_list, remote_list, persistent_list, use_pasture=False)
-            sys.exit()
-
-        if operation in ['upgrade-key-packages', 'download-key-packages', 'urls-key-packages']:
-            names = [x for x in slackroll_prioritized_pkgs if to_dbkey(x) in persistent_list and persistent_list[x] == slackroll_state_outdated]
-            if len(names) == 0:
-                print('No outdated key system packages')
-                sys.exit()
-            opmap = { 'upgrade-key-packages': 'install', 'download-key-packages': 'download', 'urls-key-packages': 'urls' }
-            install_operations_family(opmap[operation], names, local_list, remote_list, persistent_list, use_pasture=False)
-            sys.exit()
-
-        if operation == 'kernel-upgrade':
-            names = [x for x in local_list if x.startswith(slackroll_kernel_pkg_indicator) and persistent_list[x] == slackroll_state_outdated]
-            if len(names) == 0:
-                print('No outdated kernel packages')
-            install_operations_family('installpkg', names, local_list, remote_list, persistent_list, use_pasture=False)
-            post_kernel_operation()
-            sys.exit()
-
-        if operation == 'clean-cache':
-            cache_files = glob.glob(slackroll_pkgs_dir_glob)
-            cache_pkgs = []
-            extraneous_files = []
-
-            cache_files.sort()
-            for elem in cache_files:
-                try:
-                    cache_pkgs.append(pkg_from_str(elem))
-                except SlackrollError:
-                    extraneous_files.append(elem)
-
-            to_be_removed = [pkg for pkg in cache_pkgs if not pkg_in_map(pkg, local_list) and not pkg_in_map(pkg, remote_list)]
-            if len(to_be_removed) == 0:
-                print('No package files to remove')
-            else:
-                for pkg in to_be_removed:
-                    print('Removing %s ...' % pkg.fullname)
-                    try_to_remove(pkg.fullname)
-
-            if len(extraneous_files) > 0:
-                extraneous_files.sort()
-                print('\n'.join('WARNING: extraneous file %s' % x for x in extraneous_files))
             sys.exit()
 
         if operation in ['list-upgrades', 'list-outdated-frozen']:
@@ -2969,6 +2834,185 @@ if __name__ == "__main__":
             print_seq_or(persistent_list, 'All packages:', 'No packages found')
             sys.exit()
 
+        if operation == 'list-versions':
+            maybe_error_unknown_packages(args, persistent_list)
+            interceptor = SlackrollOutputInterceptor()
+            print('Available versions:')
+            for name in args:
+                print('    %s:' % name)
+                if name in local_list:
+                    print('\n'.join('\tLocal:\t%s' % ver.archivename for ver in local_list[name]))
+                if name in remote_list:
+                    print('\n'.join('\tRemote:\t%s' % ver.fullname for ver in remote_list[name]))
+                print('')
+            print('End of list')
+            interceptor.stop()
+            sys.exit()
+
+        # Everything after this point requires a writable /var/slackroll
+        handle_writable_dir(slackroll_base_dir)
+
+        if operation == 'blacklist-add':
+            add_blacklist_exprs(args)
+            sys.exit()
+
+        if operation == 'blacklist-del':
+            del_blacklist_exprs(args)
+            sys.exit()
+
+        if operation == 'set-mirror':
+            set_mirror(args[0])
+            sys.exit()
+
+        if operation == 'set-primary-mirror':
+            set_primary_mirror(args[0])
+            sys.exit()
+
+        if operation == 'add-repo':
+            repo_list = get_repo_list()
+            for r in args:
+                if not r.endswith('/'):
+                    r = r + '/'
+                if r not in repo_list:
+                    repo_list.append(r)
+            dump_repo_list(repo_list)
+            print_repo_mod_advice()
+            sys.exit()
+
+        if operation == 'remove-repo':
+            repo_list = get_repo_list()
+            repo_dict = dict(enumerate(repo_list))
+            valid = [] # type: List[int]
+            invalid = [] # type: List[Union[str, int]]
+            for x in args:
+                try:
+                    num = int(x)
+                    if num in repo_dict:
+                        valid.append(num)
+                    else:
+                        invalid.append(num)
+                except:
+                    invalid.append(x)
+            if len(invalid) > 0:
+                sys.exit('ERROR: invalid repository numbers: %s' % ', '.join(str(x) for x in invalid))
+            for v in valid:
+                del repo_dict[v]
+            repo_list = [repo_dict[x] for x in sorted(repo_dict.keys())]
+            dump_repo_list(repo_list)
+            print_repo_mod_advice()
+            sys.exit()
+
+        if operation in ['erase-cache', 'erase-tmp', 'erase-all']:
+            directories = []
+            if operation in ['erase-cache', 'erase-all']:
+                directories.append(slackroll_pkgs_dir)
+            if operation in ['erase-tmp', 'erase-all']:
+                directories.append(get_temp_dir())
+            files = concat([glob.glob(os.path.join(directory, '*')) for directory in directories])
+            if len(files) == 0:
+                print('No files to remove')
+            else:
+                files.sort() # type: ignore
+                for filename in files:
+                    try_to_remove(filename)
+            sys.exit()
+
+        # Some operations below need to have the temporary directory available to download stuff
+        if operation in ['import-key', 'download-changelog', 'update-manifest']:
+            handle_writable_dir(get_temp_dir())
+
+        if operation == 'import-key':
+            download_or_exit(get_primary_mirror(), slackroll_gpgkey_filename, slackroll_base_dir)
+            import_key(slackroll_local_gpgkey)
+            try_to_remove(slackroll_local_gpgkey)
+            sys.exit()
+
+        if operation == 'download-changelog':
+            update_changelog(get_mirror(), full=True)
+            sys.exit()
+
+        if operation == 'update-manifest':
+            update_manifest_database()
+            sys.exit()
+
+        # Every operation below needs an updated and writable persistent database
+        handle_writable_dir(get_temp_dir())
+        handle_writable_dir(slackroll_pkgs_dir)
+        write_self_file_version()
+
+        if operation == 'update':
+            mirror = get_mirror()
+            print('Package cache size: %s' % optimum_size_conversion(get_pkg_cache_size()))
+            updated = update_changelog(mirror)
+            transient_packages_present = any(persistent_list[x] in slackroll_transient_states for x in persistent_list)
+            if updated or transient_packages_present:
+                print('')
+                if updated:
+                    print('New change log entries found. Use "changelog" to read them.')
+                if transient_packages_present:
+                    print('Found packages in transient states. Use "list-transient" to list them.')
+            sys.exit()
+
+        if operation == 'touch':
+            sys.exit()
+
+        if operation in ['upgrade', 'download-upgrades', 'urls-upgrades']:
+            if operation == 'upgrade' and maybe_print_new_warning(persistent_list):
+                maybe_confirm_continue()
+
+            names = pkgs_in_state(persistent_list, [slackroll_state_outdated])
+            names.sort(key=pkg_name_key)
+
+            if len(names) == 0:
+                print('No outdated packages')
+                sys.exit()
+
+            opmap = { 'upgrade': 'install', 'download-upgrades': 'download', 'urls-upgrades': 'urls' }
+            install_operations_family(opmap[operation], names, local_list, remote_list, persistent_list, use_pasture=False)
+            sys.exit()
+
+        if operation in ['upgrade-key-packages', 'download-key-packages', 'urls-key-packages']:
+            names = [x for x in slackroll_prioritized_pkgs if to_dbkey(x) in persistent_list and persistent_list[x] == slackroll_state_outdated]
+            if len(names) == 0:
+                print('No outdated key system packages')
+                sys.exit()
+            opmap = { 'upgrade-key-packages': 'install', 'download-key-packages': 'download', 'urls-key-packages': 'urls' }
+            install_operations_family(opmap[operation], names, local_list, remote_list, persistent_list, use_pasture=False)
+            sys.exit()
+
+        if operation == 'kernel-upgrade':
+            names = [x for x in local_list if x.startswith(slackroll_kernel_pkg_indicator) and persistent_list[x] == slackroll_state_outdated]
+            if len(names) == 0:
+                print('No outdated kernel packages')
+            install_operations_family('installpkg', names, local_list, remote_list, persistent_list, use_pasture=False)
+            post_kernel_operation()
+            sys.exit()
+
+        if operation == 'clean-cache':
+            cache_files = glob.glob(slackroll_pkgs_dir_glob)
+            cache_pkgs = []
+            extraneous_files = []
+
+            cache_files.sort()
+            for elem in cache_files:
+                try:
+                    cache_pkgs.append(pkg_from_str(elem))
+                except SlackrollError:
+                    extraneous_files.append(elem)
+
+            to_be_removed = [pkg for pkg in cache_pkgs if not pkg_in_map(pkg, local_list) and not pkg_in_map(pkg, remote_list)]
+            if len(to_be_removed) == 0:
+                print('No package files to remove')
+            else:
+                for pkg in to_be_removed:
+                    print('Removing %s ...' % pkg.fullname)
+                    try_to_remove(pkg.fullname)
+
+            if len(extraneous_files) > 0:
+                extraneous_files.sort()
+                print('\n'.join('WARNING: extraneous file %s' % x for x in extraneous_files))
+            sys.exit()
+
         if operation == 'new-not-installed':
             new_packages = pkgs_in_state(persistent_list, [slackroll_state_new])
             from_states_to_state([slackroll_state_new], slackroll_state_notinstalled, persistent_list, new_packages)
@@ -3006,22 +3050,7 @@ if __name__ == "__main__":
             os.utime(slackroll_persistentlist_filename, None)
             sys.exit()
 
-        if operation == 'list-versions':
-            maybe_error_unknown_packages(args, persistent_list)
-            interceptor = SlackrollOutputInterceptor()
-            print('Available versions:')
-            for name in args:
-                print('    %s:' % name)
-                if name in local_list:
-                    print('\n'.join('\tLocal:\t%s' % ver.archivename for ver in local_list[name]))
-                if name in remote_list:
-                    print('\n'.join('\tRemote:\t%s' % ver.fullname for ver in remote_list[name]))
-                print('')
-            print('End of list')
-            interceptor.stop()
-            sys.exit()
-
-        if operation in ['install', 'reinstall', 'download', 'info', 'urls']:
+        if operation in ['install', 'reinstall', 'download', 'urls']:
             install_operations_family(operation, args, local_list, remote_list, persistent_list)
             sys.exit()
 
