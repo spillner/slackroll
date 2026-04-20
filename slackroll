@@ -1316,12 +1316,16 @@ def remove_pkg(removepkg_arg): # removepkg
     except (OSError, IOError) as err:
         sys.exit('ERROR: %s' % err)
 
-def remove_pkgs(pkg_list):
-    # type: (Sequence[SlackwarePackage]) -> None
+def remove_pkgs(pkg_list, persistent_list):
+    # type: (Sequence[SlackwarePackage], Dict[str, int]) -> None
     dotnew_files = extract_dotnew_files(pkg_list)
     for pkg in pkg_list:
         remove_pkg(pkg.idname)
+        persistent_list[to_dbkey(pkg.name)] = slackroll_state_notinstalled
     handle_dotnew_files_removal(dotnew_files)
+
+    # Save changes to persistent.db so they'll be visible to subsequent invocations even without root privileges
+    persistent_list.sync() # type: ignore
 
 def package_in_cache(package): # Check if package is in ./packages
     # type: (SlackwarePackage) -> bool
@@ -2093,18 +2097,32 @@ def install_operations_family(operation, args, local_list, remote_list, persiste
                 maybe_confirm_continue()
 
             local_pkgs = [os.path.join(slackroll_pkgs_dir, x.archivename) for x in cached_ones]
+            base_names = [x.name for x in cached_ones]
             for pkg in to_be_downloaded:
                 local_name = download_verify(mirror, pkg)
                 if local_name is None:
                     sys.exit(slackroll_exit_failure)
                 local_pkgs.append(local_name)
+                base_names.append(pkg.name)
             if is_real_install:
                 reinstall = (operation == 'reinstall')
-                for pkg_name in local_pkgs:
+                for i in range(len(local_pkgs)):
+                    pkg_name = local_pkgs[i]
                     if operation == 'installpkg':
                         install_with_installpkg(pkg_name)
                     else:
                         upgrade_or_install(pkg_name, reinstall)
+                    db_name = to_dbkey(base_names[i])
+
+                    # install_operations_family() is not expected to be called on frozen packages, but just in case that changes,
+                    # don't automatically override the user's previous manual designation. (i.e. 'frozen' package might have
+                    # just been manually updated via this function, but don't mark it for future auto-updates)
+                    if db_name not in persistent_list or persistent_list[db_name] != slackroll_state_frozen:
+                        persistent_list[db_name] = outdated_or_installed(local_list[db_name], not_pasture(remote_list[db_name]))
+
+                # Save changes to persistent.db so they'll be visible to subsequent invocations even without root privileges
+                persistent_list.sync() # type: ignore
+
         else:    # urls operation
             for pkg in chosen_pkgs:
                 print_urls(mirror, pkg)
@@ -3084,7 +3102,7 @@ if __name__ == "__main__":
             if operation == 'remove-path':
                 if maybe_print_new_warning(persistent_list) or maybe_print_outdated_warning(persistent_list):
                     maybe_confirm_continue()
-                remove_pkgs([x.local() for x in matching_pkgs])
+                remove_pkgs([x.local() for x in matching_pkgs], persistent_list)
             else:
                 opname = operation.replace('-path', '')
                 archivenames = [x.archivename for x in matching_pkgs]
@@ -3210,7 +3228,7 @@ if __name__ == "__main__":
                 for name in final_args:
                     to_be_removed.extend(local_list[name])
 
-            remove_pkgs(to_be_removed)
+            remove_pkgs(to_be_removed, persistent_list)
             sys.exit()
 
         if operation == 'kernel-clean':
@@ -3220,7 +3238,7 @@ if __name__ == "__main__":
             if len(outdated_kernel_pkgs) == 0:
                 print('No obsolete kernel packages found')
                 sys.exit()
-            remove_pkgs(outdated_kernel_pkgs)
+            remove_pkgs(outdated_kernel_pkgs, persistent_list)
             post_kernel_operation()
             sys.exit()
 
