@@ -2867,6 +2867,28 @@ if __name__ == "__main__":
             interceptor.stop()
             sys.exit()
 
+        if operation == 'name-search':
+            all_regexes = '|'.join('(?:%s)' % x for x in args)
+            try:
+                regexp = re.compile(all_regexes)
+            except re.error:
+                sys.exit('ERROR: invalid regular expression')
+
+            plist_subset = dict([(x, persistent_list[x]) for x in persistent_list if regexp.search(x) is not None])
+            print_in_states_or(slackroll_all_states, plist_subset, 'Matching packages:', 'No matching packages found', True)
+            sys.exit()
+
+        if operation == 'path-search':
+            all_regexes = '|'.join('(?:%s)' % x for x in args)
+            try:
+                regexp = re.compile(all_regexes)
+            except re.error:
+                sys.exit('ERROR: invalid regular expression')
+
+            matching_fullnames = [x.fullname for x in concat([remote_list[x] for x in remote_list]) if regexp.search(x.path) is not None]
+            print_list_or(matching_fullnames, 'Matching packages:', 'No matching packages found')
+            sys.exit()
+
         # Everything after this point requires a writable /var/slackroll
         handle_writable_dir(slackroll_base_dir)
 
@@ -3240,28 +3262,6 @@ if __name__ == "__main__":
                 sys.exit()
             remove_pkgs(outdated_kernel_pkgs, persistent_list)
             post_kernel_operation()
-            sys.exit()
-
-        if operation == 'name-search':
-            all_regexes = '|'.join('(?:%s)' % x for x in args)
-            try:
-                regexp = re.compile(all_regexes)
-            except re.error:
-                sys.exit('ERROR: invalid regular expression')
-
-            plist_subset = dict([(x, persistent_list[x]) for x in persistent_list if regexp.search(x) is not None])
-            print_in_states_or(slackroll_all_states, plist_subset, 'Matching packages:', 'No matching packages found', True)
-            sys.exit()
-
-        if operation == 'path-search':
-            all_regexes = '|'.join('(?:%s)' % x for x in args)
-            try:
-                regexp = re.compile(all_regexes)
-            except re.error:
-                sys.exit('ERROR: invalid regular expression')
-
-            matching_fullnames = [x.fullname for x in concat([remote_list[x] for x in remote_list]) if regexp.search(x.path) is not None]
-            print_list_or(matching_fullnames, 'Matching packages:', 'No matching packages found')
             sys.exit()
 
     except (KeyboardInterrupt, IOError, EOFError) as err:
