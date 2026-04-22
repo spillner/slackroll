@@ -2118,6 +2118,10 @@ def install_operations_family(operation, args, local_list, remote_list, persiste
                     # don't automatically override the user's previous manual designation. (i.e. 'frozen' package might have
                     # just been manually updated via this function, but don't mark it for future auto-updates)
                     if db_name not in persistent_list or persistent_list[db_name] != slackroll_state_frozen:
+                        if db_name in local_list:
+                            local_list[db_name] += [pkg_from_str(pkg_name)]
+                        else:
+                            local_list[db_name] = [pkg_from_str(pkg_name)]
                         persistent_list[db_name] = outdated_or_installed(local_list[db_name], not_pasture(remote_list[db_name]))
 
                 # Save changes to persistent.db so they'll be visible to subsequent invocations even without root privileges
